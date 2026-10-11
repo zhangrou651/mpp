@@ -11,6 +11,9 @@ project(mpp2
     LANGUAGES C CXX
 )
 
+include(GNUInstallDirs)
+include(CMakePackageConfigHelpers)
+
 # ────────────────────────────────────────────────────────────
 # Global build options
 # ────────────────────────────────────────────────────────────
@@ -52,11 +55,6 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
 else()
     add_compile_options(-O2 -DNDEBUG)
 endif()
-
-# ────────────────────────────────────────────────────────────
-# CMake modules path
-# ────────────────────────────────────────────────────────────
-list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 # ────────────────────────────────────────────────────────────
 # Global include directories (available to all sub-targets)
@@ -155,6 +153,44 @@ add_subdirectory(sample)
 if(BUILD_TESTS)
 	add_subdirectory(test)
 endif()
+
+# 导出安装后的 SDK，供 find_package(mpp CONFIG REQUIRED) 使用。
+set(MPP_INSTALL_CMAKEDIR "${CMAKE_INSTALL_LIBDIR}/cmake/mpp")
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/mppConfig.cmake.in" [=[
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+find_dependency(Threads)
+include("${CMAKE_CURRENT_LIST_DIR}/mppTargets.cmake")
+check_required_components(mpp)
+]=])
+configure_package_config_file(
+    "${CMAKE_CURRENT_BINARY_DIR}/mppConfig.cmake.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/mppConfig.cmake"
+    INSTALL_DESTINATION "${MPP_INSTALL_CMAKEDIR}"
+)
+write_basic_package_version_file(
+    "${CMAKE_CURRENT_BINARY_DIR}/mppConfigVersion.cmake"
+    VERSION "${PROJECT_VERSION}"
+    COMPATIBILITY SameMajorVersion
+)
+install(EXPORT mppTargets
+    FILE mppTargets.cmake
+    NAMESPACE mpp::
+    DESTINATION "${MPP_INSTALL_CMAKEDIR}"
+)
+install(FILES
+    "${CMAKE_CURRENT_BINARY_DIR}/mppConfig.cmake"
+    "${CMAKE_CURRENT_BINARY_DIR}/mppConfigVersion.cmake"
+    DESTINATION "${MPP_INSTALL_CMAKEDIR}"
+)
+install(DIRECTORY include/ DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
+    FILES_MATCHING PATTERN "*.h"
+)
+install(DIRECTORY utils/include/ utils/os/include/ al/include/ al/vi/include/
+    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
+    FILES_MATCHING PATTERN "*.h"
+)
 
 # ────────────────────────────────────────────────────────────
 # Summary

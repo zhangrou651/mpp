@@ -1713,7 +1713,13 @@ S32 handleOutputBuffer(Port *port, BOOL eof, VideoFrameInfo *pstFrame) {
                 }
                 pstFrame->stVFrame.u32PlaneStride[i] = stride;
                 pstFrame->stVFrame.u32PlaneSize[i] = (i < mp->num_planes) ? mp->plane_fmt[i].sizeimage : 0;
-                pstFrame->stVFrame.u32PlaneSizeValid[i] = b->m.planes[i].bytesused;
+                U32 bytesused = b->m.planes[i].bytesused;
+                /* Some decoder drivers report the cumulative frame length in
+                 * each plane's bytesused. It cannot exceed this plane's DMA
+                 * allocation; decoded image data occupies the full plane. */
+                pstFrame->stVFrame.u32PlaneSizeValid[i] =
+                    bytesused > pstFrame->stVFrame.u32PlaneSize[i]
+                        ? pstFrame->stVFrame.u32PlaneSize[i] : bytesused;
                 u32Total += pstFrame->stVFrame.u32PlaneSize[i];
             }
             pstFrame->stVFrame.u32TotalSize = u32Total;

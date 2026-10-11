@@ -45,13 +45,24 @@ if(MPP_CPP_AVAILABLE AND TARGET mpp_cpp)
 endif()
 
 # ---- Public include directories (propagated to consumers) ----
+foreach(mpp_include_dir IN LISTS MPP_INCLUDE_DIRS)
+    target_include_directories(mpp PUBLIC "$<BUILD_INTERFACE:${mpp_include_dir}>")
+endforeach()
 target_include_directories(mpp PUBLIC
-    ${MPP_INCLUDE_DIRS}
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/utils/include>
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/utils/os/include>
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/al/include>
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/al/vi/include>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
+foreach(mpp_include_subdir cpp sys vi vo venc vdec demux mux v2d uvc)
+    if(IS_DIRECTORY "${PROJECT_SOURCE_DIR}/include/${mpp_include_subdir}")
+        target_include_directories(mpp PUBLIC
+            "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/${mpp_include_subdir}>"
+        )
+    endif()
+endforeach()
+add_library(mpp::mpp ALIAS mpp)
 
 # ---- External dependencies (unified on the final mpp target) ----
 find_package(Threads REQUIRED)
@@ -78,4 +89,8 @@ set_target_properties(mpp PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
 )
 
-install(TARGETS mpp LIBRARY DESTINATION lib)
+install(TARGETS mpp EXPORT mppTargets
+    LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+    ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+    RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+)

@@ -836,7 +836,17 @@ static void *vdec_output_task(void *arg) {
         /* Attach VB ownership info (the plugin never touches these) */
         stFrame.ulPoolId = pChn->ulPoolId;
         stFrame.ulBufferId = ulBuf;
-        VB_SetBufferPTS(ulBuf, stFrame.stVFrame.u64PTS);
+        /* Keep the VB block's geometry and plane layout in sync with the
+         * decoder output before SYS or GetFrame hands it to a consumer. */
+        S32 frameRet = VB_UpdateBufferFrameInfo(ulBuf, &stFrame);
+        if (frameRet == 0)
+            frameRet = VB_GetFrameInfo(ulBuf, &stFrame);
+        if (frameRet != 0) {
+            error("output task: synchronize VB frame info failed, buf=%lu ret=%d", ulBuf, frameRet);
+            pChn->stExtBuf[idx].bHasDecoderRef = MPP_FALSE;
+            VB_ModReleaseBuffer(ulBuf, MPP_ID_VDEC);
+            continue;
+        }
 
         /*
          * At this point ref=1 (the "decoder base ref" from the initial

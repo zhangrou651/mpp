@@ -84,6 +84,7 @@ typedef struct _UvcChnCtx {
     UL ulVbPool;
     UL aulVbBuf[UVC_MAX_V4L2_BUF];      /* VB buffer handle per slot */
     S32 as32DmaBufFd[UVC_MAX_V4L2_BUF]; /* dma-buf fd per slot */
+    BOOL abBaseRefHeld[UVC_MAX_V4L2_BUF]; /* protected by g_stUvcCtx.lock */
     BOOL bVbPoolCreated;
     /* depth queue (ring buffer, protected by depthLock) */
     UvcDepthEntry astDepth[UVC_DEPTH_MAX];
@@ -331,6 +332,7 @@ static S32 uvc_v4l2_req_bufs(UvcDevCtx *pDev, UvcChnCtx *pChn, U32 u32FrameSize)
             UVC_LOG_ERR("VB_ModGetBuffer[%u] failed", i);
             goto err_destroy_pool;
         }
+        pChn->abBaseRefHeld[i] = MPP_TRUE;
 
         /* get dma-buf fd for V4L2 DMABUF mode */
         S32 s32DmaBufFd = -1;
@@ -376,11 +378,14 @@ static S32 uvc_v4l2_req_bufs(UvcDevCtx *pDev, UvcChnCtx *pChn, U32 u32FrameSize)
 
 err_destroy_pool:
     for (U32 i = 0; i < u32BufCnt; i++) {
-        if (pChn->aulVbBuf[i] != 0) {
+        if (pChn->abBaseRefHeld[i]) {
             VB_ModReleaseBuffer(pChn->aulVbBuf[i], MPP_ID_UVC);
+            pChn->abBaseRefHeld[i] = MPP_FALSE;
         }
+        pChn->aulVbBuf[i] = 0;
     }
     VB_DestroyPool(pChn->ulVbPool);
+    pChn->ulVbPool = 0;
     pChn->bVbPoolCreated = MPP_FALSE;
     return UVC_ERR_NOMEM;
 }
@@ -437,10 +442,11 @@ static VOID uvc_v4l2_release_bufs(UvcDevCtx *pDev, UvcChnCtx *pChn) {
     /* release VB buffers and destroy pool */
     if (pChn->bVbPoolCreated) {
         for (U32 i = 0; i < UVC_DEFAULT_BUF_CNT; i++) {
-            if (pChn->aulVbBuf[i] != 0) {
+            /* Only V4L2-owned buffers retain the base UVC reference. */
+            if (pChn->abBaseRefHeld[i])
                 VB_ModReleaseBuffer(pChn->aulVbBuf[i], MPP_ID_UVC);
-                pChn->aulVbBuf[i] = 0;
-            }
+            pChn->abBaseRefHeld[i] = MPP_FALSE;
+            pChn->aulVbBuf[i] = 0;
             pChn->as32DmaBufFd[i] = -1;
         }
         VB_DestroyPool(pChn->ulVbPool);
@@ -509,7 +515,8 @@ static VOID uvc_fill_frame_info(
     }
 
     pOut->stVFrame.u64PTS = (U64)pBuf->timestamp.tv_sec * 1000000ULL + (U64)pBuf->timestamp.tv_usec;
-    pOut->stVFrame.u32FrameFlag = pBuf->sequence;
+    /* V4L2 sequence is a counter, not MPP_FRAME_FLAG_* bits (bit 0 is EOS). */
+    pOut->stVFrame.u32FrameFlag = 0;
 
     pOut->stCommFrameInfo.u32Width = pChn->stChnAttr.u32Width;
     pOut->stCommFrameInfo.u32Height = pChn->stChnAttr.u32Height;
@@ -587,6 +594,8 @@ static void *uvc_recycle_task(void *arg) {
             break;
         }
         S32 ret = uvc_v4l2_qbuf(pDev, pChn, slot);
+        if (ret == UVC_ERR_OK)
+            pChn->abBaseRefHeld[slot] = MPP_TRUE;
         pthread_mutex_unlock(&g_stUvcCtx.lock);
 
         /* QBUF failed, so V4L2 did not take ownership. */
@@ -682,7 +691,14 @@ static void *uvc_capture_task(void *arg) {
         VideoFrameInfo stFrame;
         uvc_fill_frame_info(pDev, pChn, &v4l2buf, &stFrame);
         UL ulBuf = stFrame.ulBufferId;
-        VB_UpdateBufferFrameInfo(ulBuf, &stFrame);
+        if (VB_UpdateBufferFrameInfo(ulBuf, &stFrame) != 0 ||
+            VB_GetFrameInfo(ulBuf, &stFrame) != 0) {
+            UVC_LOG_ERR("failed to synchronize frame info for buffer %lu", ulBuf);
+            pChn->abBaseRefHeld[v4l2buf.index] = MPP_FALSE;
+            VB_ModReleaseBuffer(ulBuf, MPP_ID_UVC);
+            pthread_mutex_unlock(&g_stUvcCtx.lock);
+            continue;
+        }
         pthread_mutex_unlock(&g_stUvcCtx.lock);
 
         /*
@@ -748,7 +764,10 @@ static void *uvc_capture_task(void *arg) {
         }
 
         /* --- 3. Release the V4L2 base ref --- */
+        pthread_mutex_lock(&g_stUvcCtx.lock);
+        pChn->abBaseRefHeld[v4l2buf.index] = MPP_FALSE;
         VB_ModReleaseBuffer(ulBuf, MPP_ID_UVC);
+        pthread_mutex_unlock(&g_stUvcCtx.lock);
     }
 
     UVC_LOG_INFO("capture task exiting: dev %d chn %d", dev, chn);
